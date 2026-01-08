@@ -1,35 +1,44 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <link rel="stylesheet" href="style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Threat Guard AI</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="container">
+
     <div class="header">
-      <div class="logo">🛡️</div>
-      <h3>Threat Guard AI</h3>
+        <div class="logo">Phishing Detector</div>
+        <div class="status-badge">Active</div>
     </div>
 
     <div class="tabs">
-        <button id="tabScan" class="active">Scanner</button>
-        <button id="tabHistory">History</button>
+        <button id="tab-scanner" class="active">Scanner</button>
+        <button id="tab-history">History</button>
     </div>
 
-    <div id="viewScan">
-        <textarea id="userInput" placeholder="Paste URL..."></textarea>
-        <button id="checkBtn" class="primary-btn">Scan URL</button>
-        <div id="result" class="hidden">
-            <div id="resultIcon"></div>
-            <div id="resultText"></div>
+    <div id="view-scanner" class="view active">
+        <div class="input-group">
+            <textarea id="url-input" placeholder="Paste suspicious URL here..."></textarea>
+        </div>
+        
+        <button id="btn-scan" class="btn-primary">Scan URL</button>
+        
+        <div id="result-area" class="hidden">
+            <div id="result-icon"></div>
+            <h3 id="result-title"></h3>
+            <p id="result-desc"></p>
         </div>
     </div>
 
-    <div id="viewHistory" class="hidden">
-        <ul id="historyList"></ul>
-        <button id="refreshHistory">Refresh</button>
+    <div id="view-history" class="view hidden">
+        <div id="history-list">
+            <div class="empty-state">No scans yet.</div>
+        </div>
+        <button id="btn-clear" class="btn-text">Clear History</button>
     </div>
-  </div>
-  <script src="popup.js"></script>
+
+    <script src="popup.js"></script>
 </body>
 </html>

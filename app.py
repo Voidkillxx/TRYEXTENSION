@@ -1,142 +1,186 @@
-import re, sqlite3, datetime, joblib, os, requests
+from flask import Flask, request, jsonify
 import pandas as pd
-from fastapi import FastAPI, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+import joblib
+import os
+import math
+import re
+import requests # <--- NEEDED FOR UNROLLING
+from urllib.parse import urlparse
+from collections import Counter
 
-MAX_URL_LENGTH = 500
-SHORTENERS = {'bit.ly', 'goo.gl', 'tinyurl.com', 't.co', 'is.gd', 'buff.ly', 'adf.ly', 'ow.ly', 'tr.im'}
+app = Flask(__name__)
 
-def init_db():
-    try:
-        conn = sqlite3.connect("threats.db")
-        conn.execute("PRAGMA journal_mode=WAL;") 
-        conn.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY, content TEXT, status TEXT, date TEXT)")
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"DB Init Error: {e}")
+# --- CONFIGURATION ---
+MODEL_FILE = "phiusiil_model.pkl"
+WHITELIST_FILE = "whitelist.txt"
 
-init_db()
+# --- GLOBAL VARIABLES ---
+model = None
+feature_names = None
+whitelist = set()
 
-WHITELIST = set()
+# --- 1. LOAD RESOURCES ---
 def load_whitelist():
-    global WHITELIST
-    try:
-        if os.path.exists("whitelist.txt"):
-            with open("whitelist.txt", "r") as f:
-                for line in f:
-                    site = line.strip().lower()
-                    if site:
-                        WHITELIST.add(site)
-                        WHITELIST.add(site.split('.')[0]) 
-            print(f"Loaded {len(WHITELIST)} trusted entities.")
-    except:
-        pass
+    global whitelist
+    if os.path.exists(WHITELIST_FILE):
+        with open(WHITELIST_FILE, "r") as f:
+            whitelist = set(line.strip().lower() for line in f)
+        print(f"✅ Loaded Whitelist: {len(whitelist)} domains")
+    else:
+        print("⚠️ Whitelist file not found.")
 
+def load_model():
+    global model, feature_names
+    if os.path.exists(MODEL_FILE):
+        artifact = joblib.load(MODEL_FILE)
+        if isinstance(artifact, dict):
+            model = artifact["model"]
+            feature_names = artifact["features"]
+        else:
+            model = artifact
+            feature_names = ['url_len', 'hostname_len', 'count_dots', 'count_dashes', 
+                             'count_at', 'count_digits', 'sus_word_count', 'is_bad_tld', 'is_https']
+        print(f"✅ AI Model Loaded (Expecting {len(feature_names)} features)")
+    else:
+        print("❌ Model not found! Run train_model.py")
+
+# --- 2. THE UNROLLER (New Feature) ---
+def resolve_redirects(url):
+    """
+    Follows bit.ly/etc to find the REAL destination.
+    """
+    try:
+        # We use a HEAD request because it's faster (doesn't download the body)
+        response = requests.head(url, allow_redirects=True, timeout=3)
+        real_url = response.url
+        if real_url != url:
+            print(f"   🔄 Unrolled: {url}  --->  {real_url}")
+        return real_url
+    except:
+        return url # If it fails, just analyze the original
+
+# --- 3. FEATURE EXTRACTION ---
+def calculate_entropy(text):
+    if not text: return 0
+    entropy = 0
+    total = len(text)
+    for count in Counter(text).values():
+        p = count / total
+        entropy -= p * math.log2(p)
+    return entropy
+
+def check_impersonation(url, domain):
+    brands = {
+        'google': 'google.com', 'facebook': 'facebook.com', 'amazon': 'amazon.com',
+        'paypal': 'paypal.com', 'netflix': 'netflix.com', 'microsoft': 'microsoft.com',
+        'apple': 'apple.com', 'instagram': 'instagram.com', 'whatsapp': 'whatsapp.com',
+        'bdo': 'bdo.com.ph', 'bpi': 'bpi.com.ph', 'metrobank': 'metrobank.com.ph',
+        'gcash': 'gcash.com'
+    }
+    for brand, legit_domain in brands.items():
+        if brand in url and legit_domain not in domain:
+            return 1 
+    return 0
+
+def extract_features(url):
+    features = {}
+    url = str(url).lower()
+    try:
+        parsed = urlparse(url)
+        if not parsed.scheme: parsed = urlparse("http://" + url)
+        hostname = parsed.netloc
+        path = parsed.path
+    except:
+        hostname = url
+        path = ""
+
+    features['url_len'] = len(url)
+    features['hostname_len'] = len(hostname)
+    features['path_len'] = len(path)
+    features['entropy'] = calculate_entropy(url)
+    features['count_dots'] = url.count('.')
+    features['count_dashes'] = url.count('-')
+    features['count_at'] = url.count('@')
+    features['count_qmark'] = url.count('?')
+    features['count_digits'] = sum(c.isdigit() for c in url)
+    
+    sus_keywords = ['login', 'verify', 'update', 'account', 'secure', 'banking']
+    features['sus_word_count'] = sum(1 for w in sus_keywords if w in url)
+    
+    bad_tlds = ['.xyz', '.top', '.club', '.info', '.site', '.cn']
+    features['is_bad_tld'] = 1 if any(tld in url for tld in bad_tlds) else 0
+    
+    features['is_https'] = 1 if url.startswith('https') else 0
+    features['is_impersonating'] = check_impersonation(url, hostname)
+    
+    return features
+
+# Initialize
 load_whitelist()
+load_model()
 
-# Load AI Model
-try:
-    model = joblib.load("phiusiil_model.pkl")
-    trained_features = joblib.load("feature_names.pkl")
-    print("AI Model loaded successfully.")
-except:
-    print("Model not found. Please run train_model.py first.")
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    return response
 
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-)
-
-class ThreatRequest(BaseModel):
-    url: str
-
-def log_to_db(url, status):
-    if len(url) > MAX_URL_LENGTH: return 
-    try:
-        conn = sqlite3.connect("threats.db", timeout=5)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM logs WHERE content = ?", (url,))
-        if cursor.fetchone() is None:
-            cursor.execute("INSERT INTO logs (content, status, date) VALUES (?, ?, ?)", 
-                         (url, status, str(datetime.datetime.now())))
-            conn.commit()
-        conn.close()
-    except:
-        pass
-
-def unshorten_url(url):
-    try:
-        domain = url.split("//")[-1].split("/")[0].lower()
-        if domain in SHORTENERS:
-            response = requests.head(url, allow_redirects=True, timeout=3)
-            return response.url
-    except:
-        pass
-    return url
-
-@app.post("/analyze")
-async def analyze_threat(data: ThreatRequest, background_tasks: BackgroundTasks):
-    original_url = data.url.lower().strip()
-    url = unshorten_url(original_url)
-    
-    if not re.match(r'^https?://[\w.-]+\.[a-z]{2,}', url):
-        return {"result": "SKIPPED"} 
-
-    domain_part = url.split("//")[-1].split("/")[0]
-    for trusted_site in WHITELIST:
-        if trusted_site in domain_part:
-            return {"result": "SAFE"}
+# --- ROUTES ---
+@app.route('/predict', methods=['POST', 'OPTIONS'])
+def predict():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
 
     try:
-        # Match features with training logic
-        features = pd.DataFrame([{
-            "URLLength": len(url), 
-            "NoOfSubDomain": domain_part.count('.') - 1,
-            "IsHttps": 1 if url.startswith('https') else 0
-        }])
+        data = request.json
+        original_url = data.get('url', '').strip() # Keep case for unrolling
+        if not original_url: return jsonify({'error': 'No URL'}), 400
+
+        print(f"🔎 Analyzing: {original_url}")
+
+        # 1. UNROLL SHORTENED LINKS
+        # Check if it looks like a shortener before wasting time
+        shorteners = ['bit.ly', 'goo.gl', 'tinyurl', 't.co', 'is.gd', 'ow.ly']
+        if any(s in original_url.lower() for s in shorteners):
+            final_url = resolve_redirects(original_url)
+        else:
+            final_url = original_url
+
+        # Lowercase for analysis
+        url_for_ai = final_url.lower()
+
+        # 2. WHITELIST CHECK (On the FINAL URL)
+        try:
+            parsed = urlparse(url_for_ai)
+            if not parsed.scheme: parsed = urlparse("http://" + url_for_ai)
+            domain = parsed.netloc.replace("www.", "")
+        except:
+            domain = url_for_ai
+
+        if domain in whitelist:
+            print(f"   ✅ Whitelisted ({domain})")
+            return jsonify({'url': original_url, 'result': 'SAFE'})
+
+        # 3. AI PREDICTION
+        if not model: return jsonify({'error': 'Model not loaded'}), 500
         
-        # Align columns
-        for col in trained_features:
-            if col not in features.columns: features[col] = 0
+        feats = extract_features(url_for_ai)
+        df = pd.DataFrame([feats])
+        df = df.reindex(columns=feature_names, fill_value=0)
         
-        prediction = model.predict(features[trained_features])[0]
+        pred = model.predict(df)[0]
+        result = "SAFE" if pred == 1 else "DANGER"
         
-        # 1 = Safe, 0 = Danger
-        status = "SAFE" if prediction == 1 else "DANGER"
-    except:
-        status = "SAFE" 
+        print(f"   🤖 AI Says: {result}")
+        return jsonify({'url': original_url, 'result': result})
 
-    background_tasks.add_task(log_to_db, url, status)
-    return {"result": status}
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return jsonify({'error': str(e)}), 500
 
-# Report Incorrect Endpoint
-@app.post("/report_safe")
-async def report_safe(data: ThreatRequest):
-    url = data.url.lower().strip()
-    domain = url.split("//")[-1].split("/")[0]
-    
-    WHITELIST.add(domain)
-    with open("whitelist.txt", "a") as f:
-        f.write(f"\n{domain}")
-    
-    return {"status": "success", "message": f"{domain} whitelisted."}
-
-# History Dashboard Endpoint
-@app.get("/history")
-async def get_history():
-    try:
-        conn = sqlite3.connect("threats.db")
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT content, date FROM logs WHERE status='DANGER' ORDER BY id DESC LIMIT 10")
-        rows = cursor.fetchall()
-        conn.close()
-        return {"history": [{"url": r['content'], "date": r['date']} for r in rows]}
-    except:
-        return {"history": []}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+if __name__ == '__main__':
+    from waitress import serve
+    print("--- 🚀 SERVER STARTED (With Link Unrolling) ---")
+    print("    ✅ Serving on http://127.0.0.1:5000")
+    serve(app, host='0.0.0.0', port=5000)
