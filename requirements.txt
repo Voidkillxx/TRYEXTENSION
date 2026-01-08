@@ -1,7 +1,18 @@
+# Web Framework & API
 fastapi
 uvicorn
+
+# Data Processing & ML
 pandas
 scikit-learn
 joblib
+numpy
+
+# HTTP & validation
 requests
 pydantic
+
+# Phishing Feature Extraction (Add these!)
+beautifulsoup4   # For parsing HTML (forms, iframes)
+tldextract       # For accurate domain/subdomain splitting
+python-whois     # For checking Domain Age/Creation Date
