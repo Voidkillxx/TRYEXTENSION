@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">🛡️</div>
+      <h3>Threat Guard AI</h3>
+    </div>
+
+    <div class="tabs">
+        <button id="tabScan" class="active">Scanner</button>
+        <button id="tabHistory">History</button>
+    </div>
+
+    <div id="viewScan">
+        <textarea id="userInput" placeholder="Paste URL..."></textarea>
+        <button id="checkBtn" class="primary-btn">Scan URL</button>
+        <div id="result" class="hidden">
+            <div id="resultIcon"></div>
+            <div id="resultText"></div>
+        </div>
+    </div>
+
+    <div id="viewHistory" class="hidden">
+        <ul id="historyList"></ul>
+        <button id="refreshHistory">Refresh</button>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
