@@ -1,7 +1,7 @@
 # Web Framework & API
 fastapi
 uvicorn
-
+flask
 # Data Processing & ML
 pandas
 scikit-learn
